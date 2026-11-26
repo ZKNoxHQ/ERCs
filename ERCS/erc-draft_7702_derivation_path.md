@@ -56,7 +56,9 @@ m / 44' / 60' / 7702' / a' / p' / c / w
 | 6 | Change `c` | no | `0` or `1` |
 | 7 | Address index `w` | no | `0 <= w < 2^31` |
 
-The Ethereum address of the account is the address of the public key at the leaf of this path. A wallet conforming to this ERC MUST derive the keys of the EIP-7702 accounts it creates at this path and MUST NOT use any other path for them.
+The Ethereum address of the account is the address of the public key at the leaf of this path. A wallet conforming to this ERC MUST derive the keys of the persistent EIP-7702 accounts it creates at this path and MUST NOT use any other path for them.
+
+Single-use senders that a protocol derives in its own subtree are out of scope, for example a sender derived from a privacy pool note and used for a single withdrawal.
 
 Level 3 holds the number of the EIP that defines the account type, hardened. This ERC only defines the value `7702'`.
 
@@ -64,10 +66,12 @@ Level 3 holds the number of the EIP that defines the account type, hardened. Thi
 
 | `p` | Name | Use |
 |-----|------|-----|
-| 0 | Atomic DeFi | Addresses executing DeFi operations whose effects complete within one transaction, such as a batched approval and swap. Funds are not expected to remain on the address between transactions. |
+| 0 | Atomic DeFi | Addresses executing DeFi operations whose effects complete within one transaction, such as a batched approval and swap, or an exit from a privacy protocol followed by calls in the same transaction. Funds are not expected to remain on the address between transactions. |
 | 1 | Non-atomic DeFi | Addresses holding DeFi positions across transactions, such as lending, liquidity provision, staking, or orders settled later. |
 | 2 | Payment | Addresses given to a person or a service to receive funds, such as a deposit address whose incoming funds are then forwarded or shielded. |
 | 3 | Gas | Addresses paying transaction fees, or funding other addresses of the same seed for transaction fees. |
+
+An address executing calls after an exit from a privacy protocol SHOULD be derived on the internal branch `c = 1`. Wallets SHOULD use a new address index `w` for each such exit and MUST NOT give these addresses out to receive funds.
 
 Values from `4` to `65535` are reserved for future ERCs. Wallets MUST NOT derive keys at a reserved value. Values from `65536` to `2^31 - 1` are for private use; their meaning is wallet specific and not interoperable.
 
@@ -120,6 +124,10 @@ where each field is a 32-bit unsigned big-endian integer without the hardened bi
 
 **Non-hardened `c` and `w`.** The extended public key at depth 5 lets a service derive every address of one purpose without holding private keys, for instance a payment backend generating deposit addresses or a watch-only indexer. The cost of this choice is described in Security Considerations.
 
+**Single-use protocol senders out of scope.** A sender derived from protocol data and used once has no reason to be found by a generic wallet. Keeping it out of `m/44'/60'` prevents standard wallets from discovering it and showing it next to the public accounts of the same seed.
+
+**Fresh executor per privacy exit.** Two exits executed from the same address are linked on chain. A new internal address per exit keeps them apart, and the executor stays recoverable by any conforming wallet if funds remain on it after a failed call.
+
 **Purpose separation.** Separate keys per purpose allow separate delegations per purpose, limit what a leaked key or a faulty delegate exposes, and keep a payment address given to third parties from revealing the DeFi activity of the same user.
 
 **Gap limit of 20.** This is the value used by BIP-44, which wallets already implement.
@@ -153,6 +161,7 @@ As a sanity check, this seed gives `0x9858EfFD232B4033E47d90003D41EC34EcaEda94` 
 | Path | Device request | Address |
 |------|----------------|---------|
 | `m/44'/60'/7702'/0'/0'/0/0` | `0x00000000000000000000000000000000` | `0x879d39207ddFE75DB9fD2E3a3d9c69507CD1483C` |
+| `m/44'/60'/7702'/0'/0'/1/0` | `0x00000000000000000000000100000000` | `0x0C3a3e13A3841F958cEb4F2Ddd6A5B74f5a5B6D9` |
 | `m/44'/60'/7702'/0'/1'/0/0` | `0x00000000000000010000000000000000` | `0x624C60E5240bfc6C34AB02E4F3A661ded373103A` |
 | `m/44'/60'/7702'/0'/2'/0/0` | `0x00000000000000020000000000000000` | `0x47107e99539ea596d8cd74FA72De58a04e0cBE08` |
 | `m/44'/60'/7702'/0'/2'/0/1` | `0x00000000000000020000000000000001` | `0x80bEf5e743d69af5610cc1113F0F863E23B936F4` |
@@ -163,6 +172,7 @@ As a sanity check, this seed gives `0x9858EfFD232B4033E47d90003D41EC34EcaEda94` 
 | Path | Private key |
 |------|-------------|
 | `m/44'/60'/7702'/0'/0'/0/0` | `0x2a3731a4aee3f6958f748f72ebbfd56360f8f21fa7805f9c8bc010160888812a` |
+| `m/44'/60'/7702'/0'/0'/1/0` | `0x92c2599cdbaa5bd83ccc2f9a059b4b64dd0cc3e9d3b1525534d0a2a1c074db27` |
 | `m/44'/60'/7702'/0'/1'/0/0` | `0x587277ac03ac36a761e4ee4634906c54360704af9a308b0a7677d9652962af4d` |
 | `m/44'/60'/7702'/0'/2'/0/0` | `0x4277c8237f43ebbf98ec62a34806cd968e13cf6b26135b98b633d9757ca3bcaf` |
 | `m/44'/60'/7702'/0'/2'/0/1` | `0x03191d208bd906d063504f849e9e5451590a879f86c29cf4c337a7104078cd72` |
@@ -232,6 +242,8 @@ acct = Account.from_mnemonic(mnemonic, account_path=path_string(0, 2, 0, 1))
 **Delegation authority.** The key at any path of this subtree can sign EIP-7702 authorizations and replace the delegate of its account. Whoever holds the key controls the account, whatever the delegate code enforces. Signing devices SHOULD display the chain ID, the delegate address and the nonce of an authorization tuple before signing it, and SHOULD warn when the chain ID is `0`, which makes the authorization valid on every chain.
 
 **Prefix isolation.** Locking a dedicated application to `m/44'/60'/7702'` constrains that application only. Any application allowed on `m/44'/60'`, such as a generic Ethereum application, can also derive and sign with keys of this subtree.
+
+**Application scoping.** A host that lets an application derive keys, such as a privacy protocol plugin executing calls after a withdrawal, SHOULD give it access to the subtree `m/44'/60'/7702'/a'/p'` of the purpose it serves only, and never to other purposes or to keys outside this ERC. Because `a'` and `p'` are hardened, a compromised application then controls the addresses of that purpose and nothing else. Granting single paths of main accounts, such as `m/44'/60'/0'/0/i`, exposes those accounts to the application.
 
 **Purpose separation and privacy.** Separate keys do not prevent addresses from being linked on chain. A transfer between two addresses of the same seed, such as funding a payment address from a gas address, links them publicly. Wallets that offer purpose separation for privacy SHOULD avoid direct transfers between purposes.
 
