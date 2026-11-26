@@ -1,6 +1,6 @@
 ---
 title: Derivation Path for EIP-7702 Accounts
-description: One BIP-44 rooted HD path for EIP-7702 delegated EOAs, split by account, purpose, change and address index.
+description: One BIP-44 rooted HD path for EIP-7702 delegated EOAs, split by account, purpose, branch and address index.
 author: Renaud Dubois (@rdubois-crypto), Paul (@0xpaulio), zy0n (@zy0n), Simon Masson (@simonmasson)
 discussions-to: <ethereum-magicians thread URL>
 status: Draft
@@ -18,7 +18,7 @@ This ERC defines a single hierarchical deterministic derivation path for the sec
 m/44'/60'/7702'/a'/p'/c/w
 ```
 
-The first three levels are fixed. The last four select an account `a`, a purpose `p`, a change branch `c` and an address index `w`. The ERC also defines a registry of purpose values, an account discovery procedure, and the 16-byte request a signing device receives to derive a key in this subtree.
+The first three levels are fixed. The last four select an account `a`, a purpose `p`, a branch `c` and an address index `w`. The ERC also defines a registry of purpose values, an account discovery procedure, and the 16-byte request a signing device receives to derive a key in this subtree.
 
 ## Motivation
 
@@ -53,7 +53,7 @@ m / 44' / 60' / 7702' / a' / p' / c / w
 | 3 | Account type | yes | `7702'` |
 | 4 | Account `a` | yes | `0 <= a < 2^31` |
 | 5 | Purpose `p` | yes | a value from the purpose registry, `0 <= p < 2^31` |
-| 6 | Change `c` | no | `0` or `1` |
+| 6 | Branch `c` | no | `0`, `1`, or a protocol tag with `p = 0` |
 | 7 | Address index `w` | no | `0 <= w < 2^31` |
 
 The Ethereum address of the account is the address of the public key at the leaf of this path. A wallet conforming to this ERC MUST derive the keys of the persistent EIP-7702 accounts it creates at this path and MUST NOT use any other path for them.
@@ -71,24 +71,40 @@ Level 3 holds the number of the EIP that defines the account type, hardened. Thi
 | 2 | Payment | Addresses given to a person or a service to receive funds, such as a deposit address whose incoming funds are then forwarded or shielded. |
 | 3 | Gas | Addresses paying transaction fees, or funding other addresses of the same seed for transaction fees. |
 
-An address executing calls after an exit from a privacy protocol SHOULD be derived on the internal branch `c = 1`. Wallets SHOULD use a new address index `w` for each such exit and MUST NOT give these addresses out to receive funds.
+An address executing calls after an exit from a privacy protocol MUST be derived with `p = 0` and `c` equal to the tag of that protocol (see Branch). Wallets MUST use a new address index `w` for each such exit and MUST NOT give these addresses out to receive funds.
 
 Values from `4` to `65535` are reserved for future ERCs. Wallets MUST NOT derive keys at a reserved value. Values from `65536` to `2^31 - 1` are for private use; their meaning is wallet specific and not interoperable.
 
-### Change
+### Branch
 
-`c = 0` designates external addresses, shown to the user or given to third parties. `c = 1` designates internal addresses used by the wallet itself, such as one-time intermediate or refund addresses. Other values MUST NOT be used.
+`c = 0` designates external addresses, shown to the user or given to third parties. `c = 1` designates internal addresses used by the wallet itself, such as one-time intermediate or refund addresses.
+
+Under `p = 0`, `c` MAY also be a protocol tag. A protocol tag is the 16-bit big-endian value of two lowercase ASCII letters naming a privacy protocol, so that both bytes lie between `0x61` and `0x7a`. The branch of a tag holds the addresses that execute calls after an exit from that protocol, and nothing else. Other values of `c` MUST NOT be used.
+
+The following tags are known at the time of writing. This list is informative; a protocol not listed picks a two-letter tag that does not appear in it.
+
+| Protocol | Tag | `c` |
+|----------|-----|-----|
+| Privacy Pools | `pp` | `28784` (`0x7070`) |
+| Railgun | `rg` | `29287` (`0x7267`) |
+| Tornado Cash | `tc` | `29795` (`0x7463`) |
 
 ### Address index
 
-`w` starts at `0` and is incremented sequentially within each `(a, p, c)` branch.
+`w` starts at `0` and is incremented sequentially within each `(a, p, c)` branch. A wallet allocating a new index:
+
+- MUST keep one counter per branch for all chains, because an address is the same on every chain;
+- MUST reserve and persist the index before signing anything with its key;
+- MUST NOT reuse an index whose key has signed anything, including an operation that was abandoned or failed;
+- SHOULD check on chain that the candidate address has a zero nonce and no code before using it;
+- SHOULD NOT leave more than 20 consecutive reserved and unused indexes in a branch.
 
 ### Account discovery
 
 A wallet restoring a seed SHOULD discover accounts as follows:
 
 1. Set `a = 0`.
-2. For each registered purpose `p` and each `c` in `{0, 1}`, derive addresses for `w = 0, 1, 2, ...` and stop after 20 consecutive unused addresses.
+2. For each registered purpose `p` and each `c` in `{0, 1}`, plus, for `p = 0`, each protocol tag the wallet supports or finds in the list above, derive addresses for `w = 0, 1, 2, ...` and stop after 20 consecutive unused addresses.
 3. If at least one address of account `a` is used, increment `a` and go to step 2. Otherwise stop.
 
 An address is used if, on any chain the wallet supports, it has a nonzero nonce, a nonzero balance, nonempty code (including a delegation designator `0xef0100 || address`), or any other activity the wallet tracks.
@@ -104,7 +120,7 @@ a || p || c || w
 where each field is a 32-bit unsigned big-endian integer without the hardened bit. The device:
 
 - MUST build the full path itself from the fixed prefix and the four fields, and MUST NOT accept a full path from the host for this subtree;
-- MUST reject the request if `a`, `p` or `w` is greater than or equal to `2^31`, or if `c` is neither `0` nor `1`;
+- MUST reject the request if `a`, `p` or `w` is greater than or equal to `2^31`, or if `c` is neither `0`, `1`, nor a protocol tag with `p = 0`;
 - MUST set the hardened bit on `a` and `p`, and MUST NOT set it on `c` and `w`;
 - SHOULD display the name of the purpose when `p` is a registered value and the device shows the address.
 
@@ -123,6 +139,10 @@ where each field is a 32-bit unsigned big-endian integer without the hardened bi
 **Hardened `a'` and `p'`.** Public data or a leaked private key from one `(a, p)` subtree gives no information about any other subtree.
 
 **Non-hardened `c` and `w`.** The extended public key at depth 5 lets a service derive every address of one purpose without holding private keys, for instance a payment backend generating deposit addresses or a watch-only indexer. The cost of this choice is described in Security Considerations.
+
+**Protocol branches for exit executors.** Several applications can share one seed, for instance a Railgun wallet and a wallet handling Tornado Cash. With a single internal branch, each keeps its own counter and both hand out the same `w`. One address then executes exits from two protocols, which links them on chain, and each application overwrites the delegation of the other. A branch per protocol makes such collisions between protocols impossible. Two applications serving the same protocol can still collide; the on-chain check before use reduces this. Two-letter tags need no registry, and the values already used by some privacy wallets in their own derivation paths follow this rule.
+
+**Counter rules.** An address is the same on every chain, so a counter per chain would reuse addresses across chains. Reserving before signing prevents a crash or a timeout from handing the same index out twice. An abandoned operation may still have exposed a signed EIP-7702 authorization, for instance to a bundler during gas estimation, so its index is never reused.
 
 **Single-use protocol senders out of scope.** A sender derived from protocol data and used once has no reason to be found by a generic wallet. Keeping it out of `m/44'/60'` prevents standard wallets from discovering it and showing it next to the public accounts of the same seed.
 
@@ -162,6 +182,8 @@ As a sanity check, this seed gives `0x9858EfFD232B4033E47d90003D41EC34EcaEda94` 
 |------|----------------|---------|
 | `m/44'/60'/7702'/0'/0'/0/0` | `0x00000000000000000000000000000000` | `0x879d39207ddFE75DB9fD2E3a3d9c69507CD1483C` |
 | `m/44'/60'/7702'/0'/0'/1/0` | `0x00000000000000000000000100000000` | `0x0C3a3e13A3841F958cEb4F2Ddd6A5B74f5a5B6D9` |
+| `m/44'/60'/7702'/0'/0'/29287/0` | `0x00000000000000000000726700000000` | `0x42A28e99929a6958C3E10b6327177B032cB7344f` |
+| `m/44'/60'/7702'/0'/0'/29795/0` | `0x00000000000000000000746300000000` | `0x5d4F5dc3a8533019d869c1d1cAd6270B45BA3C6D` |
 | `m/44'/60'/7702'/0'/1'/0/0` | `0x00000000000000010000000000000000` | `0x624C60E5240bfc6C34AB02E4F3A661ded373103A` |
 | `m/44'/60'/7702'/0'/2'/0/0` | `0x00000000000000020000000000000000` | `0x47107e99539ea596d8cd74FA72De58a04e0cBE08` |
 | `m/44'/60'/7702'/0'/2'/0/1` | `0x00000000000000020000000000000001` | `0x80bEf5e743d69af5610cc1113F0F863E23B936F4` |
@@ -173,6 +195,8 @@ As a sanity check, this seed gives `0x9858EfFD232B4033E47d90003D41EC34EcaEda94` 
 |------|-------------|
 | `m/44'/60'/7702'/0'/0'/0/0` | `0x2a3731a4aee3f6958f748f72ebbfd56360f8f21fa7805f9c8bc010160888812a` |
 | `m/44'/60'/7702'/0'/0'/1/0` | `0x92c2599cdbaa5bd83ccc2f9a059b4b64dd0cc3e9d3b1525534d0a2a1c074db27` |
+| `m/44'/60'/7702'/0'/0'/29287/0` | `0x414af55a616d9a58105ec60d39dd8202bdcd772830606bdadfb0682704b53463` |
+| `m/44'/60'/7702'/0'/0'/29795/0` | `0xada12ec8471b51d18bc7a037808f1e44d0277fa341369259213e14e6303bf290` |
 | `m/44'/60'/7702'/0'/1'/0/0` | `0x587277ac03ac36a761e4ee4634906c54360704af9a308b0a7677d9652962af4d` |
 | `m/44'/60'/7702'/0'/2'/0/0` | `0x4277c8237f43ebbf98ec62a34806cd968e13cf6b26135b98b633d9757ca3bcaf` |
 | `m/44'/60'/7702'/0'/2'/0/1` | `0x03191d208bd906d063504f849e9e5451590a879f86c29cf4c337a7104078cd72` |
@@ -188,7 +212,7 @@ xpub6G13yVeYmCCXrACjNky8iWRVQV7gpUBpmxZwGdRHFQWDVzJUAHL9ETfKkaKupT2cw899sxQYwvTR
 
 and public derivation of `0/1` from it gives `0x80bEf5e743d69af5610cc1113F0F863E23B936F4`, the address of `m/44'/60'/7702'/0'/2'/0/1` above.
 
-The following requests MUST be rejected: `0x80000000000000000000000000000000` (`a >= 2^31`), `0x00000000000000040000000000000000` (reserved purpose), `0x00000000000000000000000200000000` (`c = 2`), `0x00000000000000000000000080000000` (`w >= 2^31`).
+The following requests MUST be rejected: `0x80000000000000000000000000000000` (`a >= 2^31`), `0x00000000000000040000000000000000` (reserved purpose), `0x00000000000000000000000200000000` (`c = 2`), `0x00000000000000010000726700000000` (protocol tag with `p = 1`), `0x00000000000000000000726000000000` (`0x7260` is not a tag), `0x00000000000000000000000080000000` (`w >= 2^31`).
 
 ## Reference Implementation
 
@@ -198,12 +222,23 @@ PREFIX = (44 | HARDENED, 60 | HARDENED, 7702 | HARDENED)
 RESERVED_PURPOSES = range(4, 0x10000)
 
 
+def is_protocol_tag(c: int) -> bool:
+    return 0x61 <= c >> 8 <= 0x7A and 0x61 <= c & 0xFF <= 0x7A and c < 0x10000
+
+
+def protocol_tag(name: str) -> int:
+    tag = int.from_bytes(name.encode("ascii"), "big")
+    if len(name) != 2 or not is_protocol_tag(tag):
+        raise ValueError("tag must be two lowercase ASCII letters")
+    return tag
+
+
 def path_indices(a: int, p: int, c: int, w: int) -> tuple:
     for v in (a, p, w):
         if not 0 <= v < HARDENED:
             raise ValueError("index out of range")
-    if c not in (0, 1):
-        raise ValueError("change must be 0 or 1")
+    if c not in (0, 1) and not (p == 0 and is_protocol_tag(c)):
+        raise ValueError("invalid branch")
     if p in RESERVED_PURPOSES:
         raise ValueError("reserved purpose")
     return PREFIX + (a | HARDENED, p | HARDENED, c, w)
@@ -244,6 +279,8 @@ acct = Account.from_mnemonic(mnemonic, account_path=path_string(0, 2, 0, 1))
 **Prefix isolation.** Locking a dedicated application to `m/44'/60'/7702'` constrains that application only. Any application allowed on `m/44'/60'`, such as a generic Ethereum application, can also derive and sign with keys of this subtree.
 
 **Application scoping.** A host that lets an application derive keys, such as a privacy protocol plugin executing calls after a withdrawal, SHOULD give it access to the subtree `m/44'/60'/7702'/a'/p'` of the purpose it serves only, and never to other purposes or to keys outside this ERC. Because `a'` and `p'` are hardened, a compromised application then controls the addresses of that purpose and nothing else. Granting single paths of main accounts, such as `m/44'/60'/0'/0/i`, exposes those accounts to the application.
+
+**Applications sharing a seed.** Addresses allocated by different applications from the same seed collide when they use the same branch with separate counters. For exit executors this links exits and lets one application replace the delegate of an account the other is using, so a pending operation fails or runs under unexpected code. Applications MUST use the branch of the protocol they serve, as specified above.
 
 **Purpose separation and privacy.** Separate keys do not prevent addresses from being linked on chain. A transfer between two addresses of the same seed, such as funding a payment address from a gas address, links them publicly. Wallets that offer purpose separation for privacy SHOULD avoid direct transfers between purposes.
 
